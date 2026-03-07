@@ -23,3 +23,12 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local databases and secrets
+db_gemini/
+.env
+output.txt
+
+# Temporary processing files
+*.pdf
+!1706.03762v7.pdf
