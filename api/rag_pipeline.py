@@ -10,20 +10,13 @@ from langchain_chroma import Chroma
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from dotenv import load_dotenv
 
-# We use the unstructured-client to avoid needing local Tesseract/Poppler on Vercel
+# We use the unstructured-client to avoid needing local Tesseract/Poppler or the huge 'unstructured' library on Vercel
 from unstructured_client import UnstructuredClient
 from unstructured_client.models import shared
 
 load_dotenv()
 
 def get_api_key() -> Optional[str]:
-    # Check streamlit secrets (if running in hybrid) or local env
-    try:
-        import streamlit as st
-        if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
-    except (ImportError, FileNotFoundError):
-        pass
     return os.getenv("GEMINI_API_KEY")
 
 def get_unstructured_api_key() -> Optional[str]:
@@ -36,29 +29,25 @@ def get_embedding_model():
         google_api_key=get_api_key()
     )
 
-def partition_document(
+def partition_and_chunk_document(
     file_path: str,
     status_callback: Optional[Callable] = None,
-    force_strategy: Optional[str] = None
 ):
     """
-    Cloud-native partitioning using Unstructured API.
-    Zero local dependencies (no Tesseract/Poppler).
+    Cloud-native partitioning AND CHUNKING using Unstructured API.
+    Does NOT use the heavy 'unstructured' library locally.
     """
     if status_callback:
-        status_callback("☁️ Requesting Unstructured Cloud API (Hi-Res Remote OCR)...")
+        status_callback("☁️ Requesting Unstructured Cloud (Remote OCR & Chunking)...")
 
-    # Fallback to local 'fast' strategy if no API key is provided, although it's limited
     api_key = get_unstructured_api_key()
     if not api_key:
-        if status_callback:
-            status_callback("⚠️ No UNSTRUCTURED_API_KEY found. Falling back to simple text extraction...")
-        from unstructured.partition.pdf import partition_pdf
-        return partition_pdf(filename=file_path, strategy="fast")
+        raise ValueError("UNSTRUCTURED_API_KEY missing. This is required for Vercel deployment.")
 
+    # Using the more reliable endpoint
     client = UnstructuredClient(
         api_key_auth=api_key,
-        server_url=os.getenv("UNSTRUCTURED_API_URL", "https://api.unstructured.io/general/v0/general")
+        server_url=os.getenv("UNSTRUCTURED_API_URL", "https://api.unstructuredapp.io/general/v0/general")
     )
 
     with open(file_path, "rb") as f:
@@ -71,54 +60,55 @@ def partition_document(
         ),
         strategy="hi_res",
         extract_image_block_types=["Image", "Table"],
+        # ⚡ SERVER-SIDE CHUNKING! (Removes the need for local 'unstructured' package)
+        chunking_strategy="by_title",
+        max_characters=3000,
+        combine_under_n_chars=500
     )
 
     try:
-        res = client.general.partition(req)
-        # Convert API elements into local unstructured elements for chunking
-        # This is a simplified transformation for demo purposes
-        from unstructured.staging.base import dict_to_elements
-        elements = dict_to_elements(res.elements)
-        
+        res = client.general.partition(request=req)
+        # res.elements is a list of dicts representing the chunks
         if status_callback:
-            status_callback(f"✅ Extracted {len(elements)} elements from remote API")
-        return elements
+            status_callback(f"✅ Received {len(res.elements)} chunks from remote API")
+        return res.elements
     except Exception as e:
         if status_callback:
-            status_callback(f"❌ Remote API failed: {e}. Using fast local fallback.")
-        from unstructured.partition.pdf import partition_pdf
-        return partition_pdf(filename=file_path, strategy="fast")
+            status_callback(f"❌ Cloud Partition failed: {str(e)}")
+        raise e
 
-def create_chunks_by_title(elements, status_callback: Optional[Callable] = None):
-    from unstructured.chunking.title import chunk_by_title
-    if status_callback:
-        status_callback("✂️ Creating smart chunks...")
-    return chunk_by_title(elements, max_characters=3000, new_after_n_chars=2400)
-
-def separate_content_types(chunk) -> Dict:
-    data: Dict[str, Any] = {
-        "text": getattr(chunk, 'text', str(chunk)),
+def separate_content_types_from_dict(element: Dict) -> Dict:
+    """Extract text, tables, and images from Unstructured API response dict."""
+    metadata = element.get("metadata", {})
+    text = element.get("text", "")
+    
+    data = {
+        "text": text,
         "tables": [],
         "images": [],
-        "types": ["text"],
+        "types": ["text"]
     }
-    if hasattr(chunk, "metadata") and hasattr(chunk.metadata, "orig_elements"):
-        for el in chunk.metadata.orig_elements:
-            etype = type(el).__name__
-            if etype == "Table":
-                data["types"].append("table")
-                data["tables"].append(getattr(el.metadata, "text_as_html", el.text))
-            elif etype == "Image" or etype == "Figure":
-                if hasattr(el, "metadata") and hasattr(el.metadata, "image_base64"):
-                    data["types"].append("image")
-                    data["images"].append(el.metadata.image_base64)
+    
+    # Check for table content in metadata
+    if metadata.get("text_as_html"):
+        data["tables"].append(metadata["text_as_html"])
+        data["types"].append("table")
+    
+    # Unstructured API often puts image data in orig_elements or specialized fields
+    # If the element itself is a 'CompositeElement' containing images, they'll be in there.
+    # For now we'll check common fields:
+    if metadata.get("image_base64"):
+        data["images"].append(metadata["image_base64"])
+        data["types"].append("image")
+        
     data["types"] = list(set(data["types"]))
     return data
 
 def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) -> str:
+    # Use Flash for higher rate limits on free tier (15 RPM)
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             temperature=0,
             google_api_key=get_api_key(),
         )
@@ -136,13 +126,16 @@ def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) 
         response = llm.invoke([HumanMessage(content=content)])
         return response.content
     except Exception as e:
-        return f"{text[:400]}... [Contains {len(tables)} tables, {len(images)} images]"
+        # If rate limited (429), return a simpler snippet to avoid crashing
+        if "429" in str(e):
+             return f"SUMMARY_PENDING: {text[:200]}... [Rate limit reached]"
+        return f"{text[:400]}... [Tables: {len(tables)}, Images: {len(images)}]"
 
-def _process_chunk_worker(args):
-    i, chunk = args
-    c = separate_content_types(chunk)
-    # Only use AI for multimodal chunks to save API usage
+def _process_chunk_dict_worker(args):
+    i, element = args
+    c = separate_content_types_from_dict(element)
     has_mm = "table" in c["types"] or "image" in c["types"]
+    
     summary = create_ai_enhanced_summary(c["text"], c["tables"], c["images"]) if has_mm else c["text"]
     
     doc = Document(
@@ -158,24 +151,32 @@ def _process_chunk_worker(args):
     )
     return i, doc
 
-def summarise_chunks(chunks, status_callback=None):
+def summarise_chunks(chunk_dicts, status_callback=None):
     if status_callback:
-        status_callback(f"🧠 Summarising {len(chunks)} chunks using Gemini 1.5 Flash...")
+        status_callback(f"🧠 Summarising {len(chunk_dicts)} chunks (AI enhancement for tables/images)...")
     
     results = {}
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(_process_chunk_worker, (i, chunk)): i for i, chunk in enumerate(chunks)}
+    # Lower worker count to stay within free Gemini free limits (15 RPM)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_process_chunk_dict_worker, (i, element)): i for i, element in enumerate(chunk_dicts)}
         for future in as_completed(futures):
             idx, doc = future.result()
             results[idx] = doc
-            if status_callback and (idx + 1) % 5 == 0:
-                status_callback(f"  Processed {idx + 1}/{len(chunks)} chunks...")
+            if status_callback and (idx + 1) % 4 == 0:
+                status_callback(f"  Processed {idx + 1}/{len(chunk_dicts)} segments...")
     
     return [results[i] for i in sorted(results)]
 
 def create_vector_store(documents, persist_directory="/tmp/chroma_db"):
+    # Clear old local db to prevent schema conflicts
+    import shutil
+    if os.path.exists(persist_directory):
+        try:
+            shutil.rmtree(persist_directory)
+        except:
+            pass
+
     model = get_embedding_model()
-    # Chroma in Vercel - persistent directory must be in /tmp
     return Chroma.from_documents(
         documents=documents,
         embedding=model,
@@ -185,16 +186,16 @@ def create_vector_store(documents, persist_directory="/tmp/chroma_db"):
 def generate_final_answer(chunks, query: str) -> str:
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-pro",
+            model="gemini-2.5-flash", # Use Flash for reliability/speed on Vercel
             temperature=0,
             google_api_key=get_api_key(),
         )
         prompt = f"Answer the query using the provided context (text, tables, and images).\n\nQuery: {query}\n\nContext:\n"
         for i, chunk in enumerate(chunks):
-            prompt += f"\n--- CHUNK {i+1} ---\n{chunk.page_content}\n"
+            prompt += f"\n--- CONTEXT {i+1} ---\n{chunk.page_content}\n"
         
         content = [{"type": "text", "text": prompt}]
-        # Extract images from context for multimodal reasoning
+        # Multimodal reasoning: include images found in retrieved chunks
         for chunk in chunks:
             if "original_content" in chunk.metadata:
                 d = json.loads(chunk.metadata["original_content"])
@@ -204,15 +205,14 @@ def generate_final_answer(chunks, query: str) -> str:
         response = llm.invoke([HumanMessage(content=content)])
         return response.content
     except Exception as e:
-        return f"Error generating answer: {e}"
+        return f"Error generating answer: {str(e)}"
 
 def run_complete_ingestion_pipeline(pdf_path, persist_directory="/tmp/chroma_db", status_callback=None):
-    elements = partition_document(pdf_path, status_callback)
-    chunks = create_chunks_by_title(elements, status_callback)
-    summarised = summarise_chunks(chunks, status_callback)
+    chunk_dicts = partition_and_chunk_document(pdf_path, status_callback)
+    summarised = summarise_chunks(chunk_dicts, status_callback)
     db = create_vector_store(summarised, persist_directory)
     if status_callback:
-        status_callback("🎉 Successfully indexed document in vector store.")
+        status_callback("🎉 Multimodal Knowledge Base ready.")
     return db
 
 def rag_query(query: str, persist_directory="/tmp/chroma_db"):

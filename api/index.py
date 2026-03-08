@@ -37,7 +37,9 @@ async def ingest_document(file: UploadFile = File(...)):
         run_complete_ingestion_pipeline(tmp_path, persist_directory=persist_dir)
         return {"status": "success", "message": "Document ingested successfully!"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        print(f"INGEST_ERROR: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Backend Ingest Error: {str(e)}")
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -64,4 +66,6 @@ async def query_document(query: str = Form(...)):
             "chunks": formatted_chunks
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        print(f"QUERY_ERROR: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Backend Query Error: {str(e)}")

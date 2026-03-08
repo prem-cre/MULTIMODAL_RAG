@@ -44,7 +44,8 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error("Upload failed. Make sure your API key is correct.");
+        const errData = await response.json();
+        throw new Error(errData.detail || "Upload failed. Verify your API keys.");
       }
 
       await response.json();
@@ -76,7 +77,8 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error("Query failed. Make sure you ingested a document first.");
+        const errData = await response.json();
+        throw new Error(errData.detail || "Query failed. Ensure you ingested a document.");
       }
 
       const data = await response.json();

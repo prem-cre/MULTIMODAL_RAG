@@ -1,4 +1,4 @@
-# Vercel-optimized core requirements
+# 🚀 Lean Production Requirements (Vercel Optimized)
 fastapi==0.111.0
 uvicorn==0.30.1
 python-multipart==0.0.9
@@ -8,13 +8,13 @@ langchain-core==0.2.17
 langchain-community==0.2.1
 langchain-chroma==0.1.2
 langchain-google-genai==1.0.8
-unstructured==0.14.9
+# ⚡ Use official client ONLY (No heavy local binaries/Tesseract)
 unstructured-client==0.24.1
 pydantic==2.7.4
 pydantic-settings==2.3.4
 google-generativeai==0.7.2
 chromadb==0.5.2
-# Minimal deps for unstructured element types
+# Minimal deps for LangChain community helpers
+requests==2.31.0
 lxml==5.2.2
 nltk==3.8.1
-python-magic==0.4.27
