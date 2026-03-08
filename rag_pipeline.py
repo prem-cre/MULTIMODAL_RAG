@@ -2,7 +2,8 @@ import os
 import sys
 import json
 import base64
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==========================================
 # Windows PATH configuration for Unstructured
@@ -10,8 +11,8 @@ from typing import List, Dict, Any
 if sys.platform == "win32":
     tesseract_path = r"C:\Program Files\Tesseract-OCR"
     if os.path.exists(tesseract_path) and tesseract_path not in os.environ["PATH"]:
-         os.environ["PATH"] += os.pathsep + tesseract_path
-    
+        os.environ["PATH"] += os.pathsep + tesseract_path
+
     poppler_base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages")
     if os.path.exists(poppler_base):
         for root, dirs, files in os.walk(poppler_base):
@@ -20,6 +21,11 @@ if sys.platform == "win32":
                     os.environ["PATH"] += os.pathsep + root
                 break
 # ==========================================
+
+# Silence HuggingFace unauthenticated warning if token is available
+_hf_token = os.getenv("HF_TOKEN")
+if _hf_token:
+    os.environ["HUGGINGFACE_TOKEN"] = _hf_token
 
 from unstructured.partition.pdf import partition_pdf
 from unstructured.chunking.title import chunk_by_title
@@ -33,46 +39,84 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Singleton embedding model (loaded once per process, never again) ───────────
+_embedding_model: Optional[HuggingFaceEmbeddings] = None
 
-def get_api_key():
+def get_embedding_model() -> HuggingFaceEmbeddings:
+    """Return a process-level cached HuggingFace embedding model."""
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    return _embedding_model
+
+
+def get_api_key() -> Optional[str]:
     try:
         import streamlit as st
         if "GEMINI_API_KEY" in st.secrets:
             return st.secrets["GEMINI_API_KEY"]
-    except ImportError:
-        pass
-    except FileNotFoundError:
+    except (ImportError, FileNotFoundError):
         pass
     return os.getenv("GEMINI_API_KEY")
 
 
-def partition_document(file_path: str, status_callback=None):
-    """Extract elements from PDF using unstructured"""
+# ── Strategy auto-detection ────────────────────────────────────────────────────
+
+def _detect_strategy(file_path: str) -> str:
+    """
+    Probe page 1 with the fast strategy.
+    If it yields almost no text the PDF is likely scanned → fall back to hi_res.
+    For normal text-based PDFs this probe takes < 1 second.
+    """
+    try:
+        sample = partition_pdf(filename=file_path, strategy="fast", pages=[1])
+        text = " ".join(el.text for el in sample if hasattr(el, "text"))
+        return "hi_res" if len(text.strip()) < 80 else "auto"
+    except Exception:
+        return "auto"
+
+
+# ── Step 1 – Partition ─────────────────────────────────────────────────────────
+
+def partition_document(
+    file_path: str,
+    status_callback: Optional[Callable] = None,
+    force_strategy: Optional[str] = None,
+):
+    strategy = force_strategy or _detect_strategy(file_path)
+    label = "hi-res OCR 🔬" if strategy == "hi_res" else "fast text-extract ⚡"
+
     if status_callback:
-        status_callback("📄 Reading & partitioning document (hi-res mode)…")
+        status_callback(f"📄 Partitioning document — strategy: **{label}**")
 
     elements = partition_pdf(
         filename=file_path,
-        strategy="hi_res",
+        strategy=strategy,
         infer_table_structure=True,
         extract_image_block_types=["Image"],
-        extract_image_block_to_payload=True
+        extract_image_block_to_payload=True,
     )
 
     if status_callback:
-        # Count element types for a richer status message
         type_counts: Dict[str, int] = {}
         for el in elements:
             t = type(el).__name__
             type_counts[t] = type_counts.get(t, 0) + 1
-        breakdown = ", ".join(f"{v} {k}{'s' if v > 1 else ''}" for k, v in type_counts.items())
+        breakdown = ", ".join(
+            f"{v} {k}{'s' if v > 1 else ''}" for k, v in type_counts.items()
+        )
         status_callback(f"✅ Extracted **{len(elements)} elements** — {breakdown}")
 
     return elements
 
 
-def create_chunks_by_title(elements, status_callback=None):
-    """Create intelligent chunks using title-based strategy"""
+# ── Step 2 – Chunk ─────────────────────────────────────────────────────────────
+
+def create_chunks_by_title(elements, status_callback: Optional[Callable] = None):
     if status_callback:
         status_callback("✂️ Splitting into smart chunks by title…")
 
@@ -80,7 +124,7 @@ def create_chunks_by_title(elements, status_callback=None):
         elements,
         max_characters=3000,
         new_after_n_chars=2400,
-        combine_text_under_n_chars=500
+        combine_text_under_n_chars=500,
     )
 
     if status_callback:
@@ -89,257 +133,283 @@ def create_chunks_by_title(elements, status_callback=None):
     return chunks
 
 
-def separate_content_types(chunk):
-    """Analyse what types of content are in a chunk"""
-    content_data = {
-        'text': chunk.text,
-        'tables': [],
-        'images': [],
-        'types': ['text']
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def separate_content_types(chunk) -> Dict:
+    data: Dict[str, Any] = {
+        "text": chunk.text,
+        "tables": [],
+        "images": [],
+        "types": ["text"],
     }
-
-    if hasattr(chunk, 'metadata') and hasattr(chunk.metadata, 'orig_elements'):
-        for element in chunk.metadata.orig_elements:
-            element_type = type(element).__name__
-
-            if element_type == 'Table':
-                content_data['types'].append('table')
-                table_html = getattr(element.metadata, 'text_as_html', element.text)
-                content_data['tables'].append(table_html)
-
-            elif element_type == 'Image':
-                if hasattr(element, 'metadata') and hasattr(element.metadata, 'image_base64'):
-                    content_data['types'].append('image')
-                    content_data['images'].append(element.metadata.image_base64)
-
-    content_data['types'] = list(set(content_data['types']))
-    return content_data
+    if hasattr(chunk, "metadata") and hasattr(chunk.metadata, "orig_elements"):
+        for el in chunk.metadata.orig_elements:
+            etype = type(el).__name__
+            if etype == "Table":
+                data["types"].append("table")
+                data["tables"].append(getattr(el.metadata, "text_as_html", el.text))
+            elif etype == "Image":
+                if hasattr(el, "metadata") and hasattr(el.metadata, "image_base64"):
+                    data["types"].append("image")
+                    data["images"].append(el.metadata.image_base64)
+    data["types"] = list(set(data["types"]))
+    return data
 
 
 def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) -> str:
-    """Create AI-enhanced summary for mixed content using Gemini"""
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-lite", temperature=0, google_api_key=get_api_key()
+            model="gemini-2.5-flash-lite",
+            temperature=0,
+            google_api_key=get_api_key(),
         )
-
-        prompt_text = f"""You are creating a searchable description for document content retrieval.
-
-CONTENT TO ANALYZE:
-TEXT CONTENT:
-{text}
-
-"""
-
+        prompt = (
+            "You are creating a searchable description for document content retrieval.\n\n"
+            f"TEXT CONTENT:\n{text}\n\n"
+        )
         if tables:
-            prompt_text += "TABLES:\n"
-            for i, table in enumerate(tables):
-                prompt_text += f"Table {i+1}:\n{table}\n\n"
-
-        prompt_text += """
-YOUR TASK:
-Generate a comprehensive, searchable description that covers:
-
-1. Key facts, numbers, and data points from text and tables
-2. Main topics and concepts discussed  
-3. Questions this content could answer
-4. Visual content analysis (charts, diagrams, patterns in images)
-5. Alternative search terms users might use
-
-Make it detailed and searchable - prioritize findability over brevity.
-
-SEARCHABLE DESCRIPTION:"""
-
-        message_content = [{"type": "text", "text": prompt_text}]
-
-        for image_base64 in images:
-            message_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-            })
-
-        message = HumanMessage(content=message_content)
-        response = llm.invoke([message])
+            prompt += "TABLES:\n" + "".join(f"Table {i+1}:\n{t}\n\n" for i, t in enumerate(tables))
+        prompt += (
+            "Generate a comprehensive, searchable description covering:\n"
+            "1. Key facts, numbers, and data points\n"
+            "2. Main topics and concepts\n"
+            "3. Questions this content could answer\n"
+            "4. Visual content analysis (if images present)\n"
+            "5. Alternative search terms\n\n"
+            "SEARCHABLE DESCRIPTION:"
+        )
+        content: List[Dict] = [{"type": "text", "text": prompt}]
+        for img in images:
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+        response = llm.invoke([HumanMessage(content=content)])
         return response.content
-
     except Exception as e:
-        summary = f"{text[:300]}…"
+        fallback = f"{text[:300]}…"
         if tables:
-            summary += f" [Contains {len(tables)} table(s)]"
+            fallback += f" [Contains {len(tables)} table(s)]"
         if images:
-            summary += f" [Contains {len(images)} image(s)]"
-        return summary
+            fallback += f" [Contains {len(images)} image(s)]"
+        return fallback
 
 
-def summarise_chunks(chunks, status_callback=None, progress_callback=None):
-    """Process all chunks with AI Summaries — with per-chunk live updates"""
-    if status_callback:
-        status_callback("🧠 Generating AI summaries for each chunk…")
+# ── Step 3 – Parallel summarisation ───────────────────────────────────────────
 
-    langchain_documents = []
-    total = len(chunks)
-    text_only = 0
-    multimodal = 0
-
-    for i, chunk in enumerate(chunks):
-        content_types = separate_content_types(chunk)
-
-        has_table = 'table' in content_types['types']
-        has_image = 'image' in content_types['types']
-
-        # Live per-chunk status
-        if status_callback:
-            parts = []
-            if has_table:
-                parts.append(f"📊 {len(content_types['tables'])} table(s)")
-            if has_image:
-                parts.append(f"🖼️ {len(content_types['images'])} image(s)")
-            content_label = ", ".join(parts) if parts else "📝 text only"
-            status_callback(
-                f"🔍 Processing chunk {i+1}/{total} — {content_label}"
-            )
-
-        if progress_callback:
-            progress_callback((i + 1) / total)
-
-        metadata = {
+def _process_chunk_worker(args):
+    """Thread worker: summarise one chunk, return (index, Document)."""
+    i, chunk = args
+    c = separate_content_types(chunk)
+    has_mm = "table" in c["types"] or "image" in c["types"]
+    page_content = (
+        create_ai_enhanced_summary(c["text"], c["tables"], c["images"])
+        if has_mm else c["text"]
+    )
+    doc = Document(
+        page_content=page_content,
+        metadata={
             "chunk_id": i + 1,
             "original_content": json.dumps({
-                "raw_text": content_types['text'],
-                "tables_html": content_types['tables'],
-                "images_base64": content_types['images']
-            })
-        }
+                "raw_text": c["text"],
+                "tables_html": c["tables"],
+                "images_base64": c["images"],
+            }),
+        },
+    )
+    return i, doc, has_mm
 
-        if has_image or has_table:
-            multimodal += 1
-            enhanced_content = create_ai_enhanced_summary(
-                content_types['text'],
-                content_types['tables'],
-                content_types['images']
-            )
-            doc = Document(page_content=enhanced_content, metadata=metadata)
+
+def summarise_chunks(
+    chunks,
+    status_callback: Optional[Callable] = None,
+    progress_callback: Optional[Callable] = None,
+    max_workers: int = 4,
+):
+    """
+    Summarise all chunks.
+    - Text-only chunks: processed instantly (no API call).
+    - Multimodal chunks: Gemini calls run in parallel (max_workers threads).
+    """
+    total = len(chunks)
+
+    # Pre-classify
+    text_jobs, mm_jobs = [], []
+    for i, chunk in enumerate(chunks):
+        c = separate_content_types(chunk)
+        if "table" in c["types"] or "image" in c["types"]:
+            mm_jobs.append((i, chunk))
         else:
-            text_only += 1
-            doc = Document(page_content=content_types['text'], metadata=metadata)
-
-        langchain_documents.append(doc)
+            text_jobs.append((i, chunk))
 
     if status_callback:
         status_callback(
-            f"✅ Summaries done — {text_only} text-only, {multimodal} multimodal (tables/images)"
+            f"🧠 Summarising **{total} chunks** — "
+            f"📝 {len(text_jobs)} text-only (instant) · "
+            f"🤖 {len(mm_jobs)} multimodal (parallel AI, {max_workers} threads)"
         )
 
-    return langchain_documents
+    results: Dict[int, Document] = {}
+    completed = 0
 
+    # Text-only — instant, no API
+    for i, chunk in text_jobs:
+        c = separate_content_types(chunk)
+        results[i] = Document(
+            page_content=c["text"],
+            metadata={
+                "chunk_id": i + 1,
+                "original_content": json.dumps({
+                    "raw_text": c["text"],
+                    "tables_html": [],
+                    "images_base64": [],
+                }),
+            },
+        )
+        completed += 1
+        if progress_callback:
+            progress_callback(completed / total)
 
-def create_vector_store(documents, persist_directory="db_local/chroma_db", status_callback=None):
-    """Create and persist ChromaDB vector store using local HuggingFace Embeddings"""
+    # Multimodal — parallel Gemini calls
+    if mm_jobs:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_chunk_worker, job): job for job in mm_jobs}
+            for future in as_completed(futures):
+                job = futures[future]
+                i = job[0]
+                try:
+                    idx, doc, _ = future.result()
+                    results[idx] = doc
+                    completed += 1
+                    if status_callback:
+                        status_callback(
+                            f"🔍 Chunk {idx+1} summarised — "
+                            f"**{completed}/{total}** done"
+                        )
+                except Exception as e:
+                    if status_callback:
+                        status_callback(f"⚠️ Chunk {i+1} failed ({e}) — using raw text")
+                    c = separate_content_types(job[1])
+                    results[i] = Document(
+                        page_content=c["text"],
+                        metadata={
+                            "chunk_id": i + 1,
+                            "original_content": json.dumps({
+                                "raw_text": c["text"],
+                                "tables_html": c["tables"],
+                                "images_base64": c["images"],
+                            }),
+                        },
+                    )
+                    completed += 1
+                finally:
+                    if progress_callback:
+                        progress_callback(completed / total)
+
+    docs = [results[i] for i in sorted(results)]
+
     if status_callback:
-        status_callback("🔮 Loading embedding model (all-MiniLM-L6-v2)…")
+        status_callback(
+            f"✅ All **{total} chunks** processed — "
+            f"{len(text_jobs)} text-only · {len(mm_jobs)} AI-enhanced"
+        )
 
-    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return docs
+
+
+# ── Step 4 – Vector store ──────────────────────────────────────────────────────
+
+def create_vector_store(
+    documents,
+    persist_directory: str = "db_local/chroma_db",
+    status_callback: Optional[Callable] = None,
+):
+    if status_callback:
+        status_callback(
+            "🔮 Loading embedding model — **cached after first load, instant on repeat runs**"
+        )
+
+    model = get_embedding_model()   # singleton — never re-downloads
 
     if status_callback:
-        status_callback(f"💾 Embedding {len(documents)} chunks & saving to ChromaDB…")
+        status_callback(f"💾 Embedding **{len(documents)} chunks** & writing to ChromaDB…")
 
     vectorstore = Chroma.from_documents(
         documents=documents,
-        embedding=embedding_model,
+        embedding=model,
         persist_directory=persist_directory,
-        collection_metadata={"hnsw:space": "cosine"}
+        collection_metadata={"hnsw:space": "cosine"},
     )
 
     if status_callback:
-        status_callback(f"✅ Vector store ready — {len(documents)} chunks indexed at `{persist_directory}`")
+        status_callback(
+            f"✅ Vector store ready — **{len(documents)} chunks** indexed at `{persist_directory}`"
+        )
 
     return vectorstore
 
 
-def generate_final_answer(chunks, query):
-    """Generate final answer using multimodal content and Gemini"""
+# ── Answer generation ──────────────────────────────────────────────────────────
+
+def generate_final_answer(chunks, query: str) -> str:
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-lite", temperature=0, google_api_key=get_api_key()
+            model="gemini-2.5-flash-lite",
+            temperature=0,
+            google_api_key=get_api_key(),
         )
-
-        prompt_text = f"""Based on the following documents, please answer this question: {query}
-
-CONTENT TO ANALYZE:
-"""
-
+        prompt = f"Based on the following documents, answer: {query}\n\nCONTENT:\n"
         for i, chunk in enumerate(chunks):
-            prompt_text += f"--- Document {i+1} ---\n"
-
+            prompt += f"--- Document {i+1} ---\n"
             if "original_content" in chunk.metadata:
-                original_data = json.loads(chunk.metadata["original_content"])
-
-                raw_text = original_data.get("raw_text", "")
-                if raw_text:
-                    prompt_text += f"TEXT:\n{raw_text}\n\n"
-
-                tables_html = original_data.get("tables_html", [])
-                if tables_html:
-                    prompt_text += "TABLES:\n"
-                    for j, table in enumerate(tables_html):
-                        prompt_text += f"Table {j+1}:\n{table}\n\n"
-
-            prompt_text += "\n"
-
-        prompt_text += """
-Please provide a clear, comprehensive answer using the text, tables, and images above. If the documents don't contain sufficient information to answer the question, say "I don't have enough information to answer that question based on the provided documents."
-
-ANSWER:"""
-
-        message_content = [{"type": "text", "text": prompt_text}]
-
+                d = json.loads(chunk.metadata["original_content"])
+                if d.get("raw_text"):
+                    prompt += f"TEXT:\n{d['raw_text']}\n\n"
+                for j, tbl in enumerate(d.get("tables_html", [])):
+                    prompt += f"Table {j+1}:\n{tbl}\n\n"
+            prompt += "\n"
+        prompt += (
+            "Provide a clear, comprehensive answer. "
+            "If the documents don't have enough info, say so.\n\nANSWER:"
+        )
+        content: List[Dict] = [{"type": "text", "text": prompt}]
         for chunk in chunks:
             if "original_content" in chunk.metadata:
-                original_data = json.loads(chunk.metadata["original_content"])
-                for image_base64 in original_data.get("images_base64", []):
-                    message_content.append({
+                d = json.loads(chunk.metadata["original_content"])
+                for img in d.get("images_base64", []):
+                    content.append({
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                        "image_url": {"url": f"data:image/jpeg;base64,{img}"},
                     })
-
-        message = HumanMessage(content=message_content)
-        response = llm.invoke([message])
+        response = llm.invoke([HumanMessage(content=content)])
         return response.content
-
     except Exception as e:
-        return "Sorry, I encountered an error while generating the answer."
+        return f"Sorry, I encountered an error: {e}"
 
 
-# ─────────────────────────────────────────────
-# Public API used by Streamlit UI
-# ─────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
 def run_complete_ingestion_pipeline(
     pdf_path: str,
-    persist_directory="db_local/chroma_db",
-    status_callback=None,
-    progress_callback=None,
+    persist_directory: str = "db_local/chroma_db",
+    status_callback: Optional[Callable] = None,
+    progress_callback: Optional[Callable] = None,
+    force_strategy: Optional[str] = None,
+    max_workers: int = 4,
 ):
     """
-    Run the complete RAG ingestion pipeline.
+    Full ingestion pipeline: partition → chunk → summarise → embed → store.
 
     Parameters
     ----------
-    pdf_path : str
-        Path to the PDF file.
-    persist_directory : str
-        Where to persist ChromaDB.
-    status_callback : callable(str) | None
-        Called with a markdown string on every status update.
-        Use this to pipe messages into st.status / st.markdown.
-    progress_callback : callable(float) | None
-        Called with a 0–1 float during the chunking phase so you can
-        drive an st.progress bar.
+    pdf_path          Path to the PDF.
+    persist_directory ChromaDB storage path.
+    status_callback   callable(str) — markdown status lines for the UI.
+    progress_callback callable(float 0–1) — drives a progress bar.
+    force_strategy    "auto" | "hi_res" | None (auto-detect from content).
+    max_workers       Parallel threads for Gemini AI summary calls (default 4).
     """
-    elements = partition_document(pdf_path, status_callback)
-    chunks = create_chunks_by_title(elements, status_callback)
-    summarised = summarise_chunks(chunks, status_callback, progress_callback)
-    db = create_vector_store(summarised, persist_directory, status_callback)
+    elements   = partition_document(pdf_path, status_callback, force_strategy)
+    chunks     = create_chunks_by_title(elements, status_callback)
+    summarised = summarise_chunks(chunks, status_callback, progress_callback, max_workers)
+    db         = create_vector_store(summarised, persist_directory, status_callback)
 
     if status_callback:
         status_callback("🎉 **Pipeline complete!** Your document is ready to query.")
@@ -347,20 +417,21 @@ def run_complete_ingestion_pipeline(
     return db
 
 
-def rag_query(query: str, persist_directory="db_local/chroma_db", top_k: int = 3):
+def rag_query(
+    query: str,
+    persist_directory: str = "db_local/chroma_db",
+    top_k: int = 3,
+):
     """
-    Perform RAG retrieval and generation.
+    Retrieve top-k chunks and generate a grounded answer.
 
     Returns
     -------
     answer : str
-    chunks : list[Document]   — the top-k retrieved chunks (rich metadata intact)
+    chunks : list[Document]
     """
-    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    db = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-
-    retriever = db.as_retriever(search_kwargs={"k": top_k})
-    chunks = retriever.invoke(query)
-
-    final_answer = generate_final_answer(chunks, query)
-    return final_answer, chunks
+    model = get_embedding_model()   # reuses cached model — no reload
+    db = Chroma(persist_directory=persist_directory, embedding_function=model)
+    chunks = db.as_retriever(search_kwargs={"k": top_k}).invoke(query)
+    answer = generate_final_answer(chunks, query)
+    return answer, chunks
