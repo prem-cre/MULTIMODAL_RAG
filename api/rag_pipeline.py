@@ -13,8 +13,7 @@ from dotenv import load_dotenv
 # We use the unstructured-client to avoid needing local Tesseract/Poppler or the huge 'unstructured' library on Vercel
 from unstructured_client import UnstructuredClient
 from unstructured_client.models import shared
-
-from langchain_community.embeddings import HuggingFaceInferenceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 load_dotenv()
 
@@ -25,10 +24,10 @@ def get_unstructured_api_key() -> Optional[str]:
     return os.getenv("UNSTRUCTURED_API_KEY")
 
 def get_embedding_model():
-    """FREE Open Source Embeddings (No paid Gemini key required)."""
-    return HuggingFaceInferenceEmbeddings(
-        api_key=os.getenv("HF_TOKEN"), # Optional, works limited without
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    """FREE Cloud Embeddings (Zero memory usage on Vercel)."""
+    return GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001", 
+        google_api_key=get_api_key()
     )
 
 def partition_and_chunk_document(
@@ -72,8 +71,10 @@ def partition_and_chunk_document(
         )
     )
 
+    print(f"DEBUG: Sending to Unstructured Cloud API...")
     try:
         res = client.general.partition(request=req)
+        print(f"DEBUG: Received partition response.")
         # res.elements is a list of dicts representing the chunks
         if status_callback:
             status_callback(f"✅ Received {len(res.elements)} chunks from remote API")
@@ -114,7 +115,7 @@ def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) 
     # Use Flash for higher rate limits on free tier (15 RPM)
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash-lite",
             temperature=0,
             google_api_key=get_api_key(),
         )
@@ -192,7 +193,7 @@ def create_vector_store(documents, persist_directory="/tmp/chroma_db"):
 def generate_final_answer(chunks, query: str) -> str:
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", # Use Flash for reliability/speed on Vercel
+            model="gemini-2.0-flash-lite", # Use 2.0 Flash Lite for best reliability
             temperature=0,
             google_api_key=get_api_key(),
         )

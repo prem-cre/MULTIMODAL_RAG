@@ -18,3 +18,4 @@ chromadb==0.5.2
 requests==2.31.0
 lxml==5.2.2
 nltk==3.8.1
+huggingface-hub
