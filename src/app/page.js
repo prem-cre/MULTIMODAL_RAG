@@ -44,8 +44,14 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.detail || "Upload failed. Verify your API keys.");
+        let msg = "Upload failed.";
+        try {
+          const errData = await response.json();
+          msg = errData.detail || msg;
+        } catch {
+          msg = await response.text();
+        }
+        throw new Error(msg);
       }
 
       await response.json();
@@ -77,8 +83,14 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.detail || "Query failed. Ensure you ingested a document.");
+        let msg = "Query failed.";
+        try {
+          const errData = await response.json();
+          msg = errData.detail || msg;
+        } catch {
+          msg = await response.text();
+        }
+        throw new Error(msg);
       }
 
       const data = await response.json();

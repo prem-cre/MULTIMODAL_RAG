@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 from unstructured_client import UnstructuredClient
 from unstructured_client.models import shared
 
+from langchain_community.embeddings import HuggingFaceInferenceEmbeddings
+
 load_dotenv()
 
 def get_api_key() -> Optional[str]:
@@ -23,10 +25,10 @@ def get_unstructured_api_key() -> Optional[str]:
     return os.getenv("UNSTRUCTURED_API_KEY")
 
 def get_embedding_model():
-    """Cloud-based embeddings for Vercel memory efficiency."""
-    return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001", 
-        google_api_key=get_api_key()
+    """FREE Open Source Embeddings (No paid Gemini key required)."""
+    return HuggingFaceInferenceEmbeddings(
+        api_key=os.getenv("HF_TOKEN"), # Optional, works limited without
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
 def partition_and_chunk_document(
