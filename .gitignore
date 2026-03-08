@@ -23,6 +23,8 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+node_modules/
+.next/
 
 # Local databases and secrets
 db_gemini/
