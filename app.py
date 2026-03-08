@@ -1,11 +1,14 @@
 import streamlit as st
 import os
 import tempfile
+from dotenv import load_dotenv
 from rag_pipeline import run_complete_ingestion_pipeline, rag_query, get_api_key
+
+load_dotenv()
 
 st.set_page_config(page_title="Multimodal RAG with Gemini", page_icon="🤖", layout="wide")
 
-st.title("Multimodal RAG with Gemini 🚀")
+st.title("Multimodal RAG  🚀")
 st.markdown("Build an intelligent document retrieval system that understands **Text**, **Tables**, and **Images** using LangChain, Chroma, Unstructured, and Google's Gemini models.")
 
 # API Key check
