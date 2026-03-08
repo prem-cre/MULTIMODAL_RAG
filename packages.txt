@@ -1,4 +1,5 @@
 poppler-utils
-libmagic1
-libgl1
-libglib2.0-0
+libmagic-dev
+libgl1-mesa-glx
+libglib2.0-dev
+libheif-dev

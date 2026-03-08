@@ -1,9 +1,10 @@
-# Core unstructured — avoid [pdf] extra, it pulls detectron2/tesseract which break on Cloud
+# Core unstructured — avoid [pdf] extra (pulls detectron2/tesseract, breaks on Cloud)
 unstructured==0.16.23
 unstructured-client
 pdfminer.six
 pdf2image
 pillow
+pillow-heif
 
 # LangChain stack
 langchain-core
