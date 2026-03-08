@@ -53,17 +53,21 @@ def partition_and_chunk_document(
     with open(file_path, "rb") as f:
         file_content = f.read()
 
-    req = shared.PartitionParameters(
-        files=shared.Files(
-            content=file_content,
-            file_name=file_path,
-        ),
-        strategy="hi_res",
-        extract_image_block_types=["Image", "Table"],
-        # ⚡ SERVER-SIDE CHUNKING! (Removes the need for local 'unstructured' package)
-        chunking_strategy="by_title",
-        max_characters=3000,
-        combine_under_n_chars=500
+    from unstructured_client.models import operations
+    
+    req = operations.PartitionRequest(
+        partition_parameters=shared.PartitionParameters(
+            files=shared.Files(
+                content=file_content,
+                file_name=file_path,
+            ),
+            strategy="hi_res",
+            extract_image_block_types=["Image", "Table"],
+            # ⚡ SERVER-SIDE CHUNKING! (Removes the need for local 'unstructured' package)
+            chunking_strategy="by_title",
+            max_characters=3000,
+            combine_under_n_chars=500
+        )
     )
 
     try:
