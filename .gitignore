@@ -26,6 +26,7 @@ Thumbs.db
 
 # Local databases and secrets
 db_gemini/
+db_local/
 .env
 output.txt
 

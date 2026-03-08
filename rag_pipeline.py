@@ -30,7 +30,8 @@ from unstructured.chunking.title import chunk_by_title
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from langchain_chroma import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv
 
 import google.generativeai as genai
@@ -212,11 +213,11 @@ def summarise_chunks(chunks):
     print(f"✅ Processed {len(langchain_documents)} chunks")
     return langchain_documents
 
-def create_vector_store(documents, persist_directory="db_gemini/chroma_db"):
-    """Create and persist ChromaDB vector store using Gemini Embeddings"""
-    print("🔮 Creating embeddings and storing in ChromaDB...")
+def create_vector_store(documents, persist_directory="db_local/chroma_db"):
+    """Create and persist ChromaDB vector store using local HuggingFace Embeddings"""
+    print("🔮 Creating local embeddings and storing in ChromaDB...")
         
-    embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=get_api_key())
+    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     
     print("--- Creating vector store ---")
     vectorstore = Chroma.from_documents(
@@ -285,7 +286,7 @@ ANSWER:"""
         print(f"❌ Answer generation failed: {e}")
         return "Sorry, I encountered an error while generating the answer."
 
-def run_complete_ingestion_pipeline(pdf_path: str, persist_directory="db_gemini/chroma_db"):
+def run_complete_ingestion_pipeline(pdf_path: str, persist_directory="db_local/chroma_db"):
     """Run the complete RAG ingestion pipeline"""
     print("🚀 Starting RAG Ingestion Pipeline")
     
@@ -299,11 +300,11 @@ def run_complete_ingestion_pipeline(pdf_path: str, persist_directory="db_gemini/
     print("🎉 Pipeline completed successfully!")
     return db
 
-def rag_query(query: str, persist_directory="db_gemini/chroma_db"):
+def rag_query(query: str, persist_directory="db_local/chroma_db"):
     """Perform RAG retrieval and generation"""
     configure_genai()
 
-    embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=get_api_key())
+    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     db = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
     
     retriever = db.as_retriever(search_kwargs={"k": 3})

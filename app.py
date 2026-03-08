@@ -62,7 +62,7 @@ for message in st.session_state.messages:
 # React to user input
 if prompt := st.chat_input("Ask a question about the processed documents..."):
     # Check if vector DB exists
-    if not os.path.exists("db_gemini/chroma_db"):
+    if not os.path.exists("db_local/chroma_db"):
         st.warning("Please process a document first in the sidebar before asking questions.")
     else:
         # Display user message in chat message container
