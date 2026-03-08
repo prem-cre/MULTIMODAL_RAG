@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import Image from "next/image";
 
 export default function Home() {
   const [file, setFile] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState([]);
@@ -16,17 +14,31 @@ export default function Home() {
 
   const messagesEndRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
     setError("");
+  };
+
+  /**
+   * Safe response reader — fixes "body stream already read" error.
+   *
+   * Root cause: calling response.json() consumes the body stream. If json()
+   * throws (e.g. the server returned plain text / HTML), a subsequent call to
+   * response.text() fails because the stream is already closed.
+   *
+   * Fix: always read as text first, then attempt JSON.parse().
+   */
+  const readResponseSafely = async (response) => {
+    const text = await response.text();           // read ONCE
+    try {
+      return { json: JSON.parse(text), text };    // try to parse
+    } catch {
+      return { json: null, text };                // plain text (e.g. HTML error page)
+    }
   };
 
   const handleUpload = async () => {
@@ -43,19 +55,22 @@ export default function Home() {
         body: formData,
       });
 
+      const { json, text } = await readResponseSafely(response);
+
       if (!response.ok) {
-        let msg = "Upload failed.";
-        try {
-          const errData = await response.json();
-          msg = errData.detail || msg;
-        } catch {
-          msg = await response.text();
-        }
+        const msg =
+          json?.detail ||
+          json?.message ||
+          (text.length < 300 ? text : "Upload failed — check server logs.");
         throw new Error(msg);
       }
 
-      await response.json();
-      setMessages([{ role: "ai", content: `Excellent! **${file.name}** has been indexed. What would you like to know about it?` }]);
+      setMessages([
+        {
+          role: "ai",
+          content: `Excellent! **${file.name}** has been indexed. What would you like to know about it?`,
+        },
+      ]);
       setActiveTab("chat");
     } catch (err) {
       setError(err.message);
@@ -68,13 +83,13 @@ export default function Home() {
     e.preventDefault();
     if (!query.trim() || isLoading) return;
 
-    const userMsg = { role: "user", content: query };
-    setMessages((prev) => [...prev, userMsg]);
+    const currentQuery = query;
+    setMessages((prev) => [...prev, { role: "user", content: currentQuery }]);
     setQuery("");
     setIsLoading(true);
 
     const formData = new FormData();
-    formData.append("query", query);
+    formData.append("query", currentQuery);
 
     try {
       const response = await fetch("/api/query", {
@@ -82,22 +97,26 @@ export default function Home() {
         body: formData,
       });
 
+      const { json, text } = await readResponseSafely(response);
+
       if (!response.ok) {
-        let msg = "Query failed.";
-        try {
-          const errData = await response.json();
-          msg = errData.detail || msg;
-        } catch {
-          msg = await response.text();
-        }
+        const msg =
+          json?.detail ||
+          json?.message ||
+          (text.length < 300 ? text : "Query failed — check server logs.");
         throw new Error(msg);
       }
 
-      const data = await response.json();
-      setMessages((prev) => [...prev, { role: "ai", content: data.answer }]);
-      setLastSources(data.chunks || []);
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: json?.answer || "No answer returned." },
+      ]);
+      setLastSources(json?.chunks || []);
     } catch (err) {
-      setMessages((prev) => [...prev, { role: "ai", content: `❌ **Error:** ${err.message}` }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: `❌ **Error:** ${err.message}` },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -106,48 +125,52 @@ export default function Home() {
   return (
     <div className="page">
       <div className="glass-card">
-        <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <header
+          style={{
+            marginBottom: "2rem",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div>
             <h1>Multimodal RAG</h1>
-            <p>Powered by Gemini & Unstructured</p>
+            <p>Powered by Gemini &amp; Unstructured</p>
           </div>
 
-          <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: '12px', padding: '0.3rem' }}>
-            <button
-              onClick={() => setActiveTab('ingest')}
-              style={{
-                background: activeTab === 'ingest' ? 'rgba(69, 162, 158, 0.2)' : 'none',
-                border: 'none', color: activeTab === 'ingest' ? '#45A29E' : '#8892b0',
-                padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'
-              }}
-            >
-              Upload
-            </button>
-            <button
-              onClick={() => setActiveTab('chat')}
-              style={{
-                background: activeTab === 'chat' ? 'rgba(69, 162, 158, 0.2)' : 'none',
-                border: 'none', color: activeTab === 'chat' ? '#45A29E' : '#8892b0',
-                padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'
-              }}
-            >
-              Chat
-            </button>
-            <button
-              onClick={() => setActiveTab('sources')}
-              style={{
-                background: activeTab === 'sources' ? 'rgba(69, 162, 158, 0.2)' : 'none',
-                border: 'none', color: activeTab === 'sources' ? '#45A29E' : '#8892b0',
-                padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'
-              }}
-            >
-              Sources
-            </button>
+          <div
+            style={{
+              display: "flex",
+              background: "rgba(255,255,255,0.05)",
+              borderRadius: "12px",
+              padding: "0.3rem",
+            }}
+          >
+            {["ingest", "chat", "sources"].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  background:
+                    activeTab === tab ? "rgba(69,162,158,0.2)" : "none",
+                  border: "none",
+                  color: activeTab === tab ? "#45A29E" : "#8892b0",
+                  padding: "0.5rem 1rem",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                  textTransform: "capitalize",
+                }}
+              >
+                {tab === "ingest" ? "Upload" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
           </div>
         </header>
 
-        {activeTab === 'ingest' && (
-          <div style={{ animation: 'slideUp 0.4s ease-out' }}>
+        {/* ─── Upload tab ─────────────────────────────────────────────────── */}
+        {activeTab === "ingest" && (
+          <div style={{ animation: "slideUp 0.4s ease-out" }}>
             <div className="upload-section">
               <input
                 type="file"
@@ -156,49 +179,89 @@ export default function Home() {
                 onChange={handleFileChange}
                 accept=".pdf"
               />
-              <label htmlFor="file-upload" style={{ cursor: 'pointer' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📄</div>
+              <label htmlFor="file-upload" style={{ cursor: "pointer" }}>
+                <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>📄</div>
                 <h3>{file ? file.name : "Choose a PDF Document"}</h3>
-                <p>{file ? "Ready to index" : "Drag and drop or click to browse"}</p>
+                <p>
+                  {file ? "Ready to index" : "Drag and drop or click to browse"}
+                </p>
               </label>
             </div>
 
-            {error && <div style={{ color: '#ff4b2b', marginBottom: '1rem', textAlign: 'center' }}>⚠️ {error}</div>}
+            {error && (
+              <div
+                style={{
+                  color: "#ff4b2b",
+                  marginBottom: "1rem",
+                  textAlign: "center",
+                  wordBreak: "break-word",
+                }}
+              >
+                ⚠️ {error}
+              </div>
+            )}
 
             <button
               className="btn-primary"
               onClick={handleUpload}
               disabled={!file || isProcessing}
-              style={{ width: '100%', justifyContent: 'center' }}
+              style={{ width: "100%", justifyContent: "center" }}
             >
-              {isProcessing ? "🔍 Indexing..." : "⚡ Index Multimodal Content"}
+              {isProcessing ? "🔍 Indexing…" : "⚡ Index Multimodal Content"}
             </button>
           </div>
         )}
 
-        {activeTab === 'chat' && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '500px' }}>
-            <div style={{ flex: 1, overflowY: 'auto', marginBottom: '1.5rem', paddingRight: '0.5rem' }}>
+        {/* ─── Chat tab ────────────────────────────────────────────────────── */}
+        {activeTab === "chat" && (
+          <div style={{ display: "flex", flexDirection: "column", height: "500px" }}>
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                marginBottom: "1.5rem",
+                paddingRight: "0.5rem",
+              }}
+            >
               {messages.length === 0 ? (
-                <div style={{ textAlign: 'center', marginTop: '4rem', color: '#8892b0' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>🤖</div>
+                <div
+                  style={{
+                    textAlign: "center",
+                    marginTop: "4rem",
+                    color: "#8892b0",
+                  }}
+                >
+                  <div style={{ fontSize: "2.5rem", marginBottom: "1rem" }}>
+                    🤖
+                  </div>
                   <h3>Your Intelligent Research Assistant</h3>
-                  <p>Upload a document to start a conversation about text, tables, and images.</p>
+                  <p>
+                    Upload a document to start a conversation about text, tables,
+                    and images.
+                  </p>
                 </div>
               ) : (
                 messages.map((msg, idx) => (
-                  <div key={idx} className={`chat-bubble ${msg.role === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                  <div
+                    key={idx}
+                    className={`chat-bubble ${
+                      msg.role === "user" ? "user-bubble" : "ai-bubble"
+                    }`}
+                  >
+                    <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
                   </div>
                 ))
               )}
               <div ref={messagesEndRef} />
             </div>
 
-            <form onSubmit={handleQuery} style={{ position: 'relative' }}>
+            <form
+              onSubmit={handleQuery}
+              style={{ position: "relative" }}
+            >
               <input
                 type="text"
-                placeholder="Ask a question about the papers..."
+                placeholder="Ask a question about the document…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 disabled={isLoading}
@@ -206,26 +269,60 @@ export default function Home() {
               <button
                 type="submit"
                 className="btn-primary"
-                style={{ position: 'absolute', right: '8px', top: '8px', padding: '0.6rem 1rem' }}
+                style={{
+                  position: "absolute",
+                  right: "8px",
+                  top: "8px",
+                  padding: "0.6rem 1rem",
+                }}
                 disabled={isLoading || !query.trim()}
               >
-                {isLoading ? "..." : "→"}
+                {isLoading ? "…" : "→"}
               </button>
             </form>
           </div>
         )}
 
-        {activeTab === 'sources' && (
-          <div style={{ animation: 'slideUp 0.4s ease-out', maxHeight: '500px', overflowY: 'auto' }}>
+        {/* ─── Sources tab ─────────────────────────────────────────────────── */}
+        {activeTab === "sources" && (
+          <div
+            style={{
+              animation: "slideUp 0.4s ease-out",
+              maxHeight: "500px",
+              overflowY: "auto",
+            }}
+          >
             {lastSources.length === 0 ? (
-              <div style={{ textAlign: 'center', marginTop: '4rem', color: '#8892b0' }}>
-                <p>Retrieved segments will appear here after your first question.</p>
+              <div
+                style={{
+                  textAlign: "center",
+                  marginTop: "4rem",
+                  color: "#8892b0",
+                }}
+              >
+                <p>
+                  Retrieved segments will appear here after your first question.
+                </p>
               </div>
             ) : (
               lastSources.map((source, idx) => (
-                <div key={idx} className="chat-bubble" style={{ marginBottom: '1.5rem' }}>
-                  <div style={{ fontWeight: 'bold', color: '#45A29E', marginBottom: '0.5rem' }}>Source Segment {idx + 1}</div>
-                  <div style={{ fontSize: '0.9rem', lineHeight: '1.5' }}>{source.page_content}</div>
+                <div
+                  key={idx}
+                  className="chat-bubble"
+                  style={{ marginBottom: "1.5rem" }}
+                >
+                  <div
+                    style={{
+                      fontWeight: "bold",
+                      color: "#45A29E",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    Source Segment {idx + 1}
+                  </div>
+                  <div style={{ fontSize: "0.9rem", lineHeight: "1.5" }}>
+                    {source.page_content}
+                  </div>
                 </div>
               ))
             )}
@@ -233,7 +330,9 @@ export default function Home() {
         )}
       </div>
 
-      <footer style={{ marginTop: '2rem', color: '#8892b0', fontSize: '0.8rem' }}>
+      <footer
+        style={{ marginTop: "2rem", color: "#8892b0", fontSize: "0.8rem" }}
+      >
         Professional Deployment Hub ⚡ Vercel + Gemini
       </footer>
     </div>

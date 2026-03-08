@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Local development requirements  (install into your venv)
+#   pip install -r requirements.txt
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Web server
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# Config
+python-dotenv==1.0.1
+
+# LangChain stack
+langchain==0.2.1
+langchain-core==0.2.17
+langchain-community==0.2.1
+langchain-chroma==0.1.2
+langchain-google-genai==1.0.8
+
+# Google AI
+google-generativeai==0.7.2
+
+# Vector DB  (EphemeralClient – no SQLite / no settings mismatch)
+chromadb==0.5.2
+
+# Cloud document parsing  (no Tesseract / Poppler needed)
+unstructured-client==0.24.1
+
+# Misc
+pydantic==2.7.4
+pydantic-settings==2.3.4
+requests==2.31.0
+lxml==5.2.2
+nltk==3.8.1
