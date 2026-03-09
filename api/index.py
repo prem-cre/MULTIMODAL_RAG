@@ -1,9 +1,21 @@
 import os
+import sys
 import tempfile
 import traceback
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from api.rag_pipeline import run_complete_ingestion_pipeline, rag_query
+
+# Add the CURRENT directory to the path so Vercel can find rag_pipeline.py
+current_dir = os.path.dirname(__file__)
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+# Import functions from the sibling file (rag_pipeline.py)
+try:
+    from rag_pipeline import run_complete_ingestion_pipeline, rag_query
+except ImportError:
+    # Fallback for local development if running from root folder
+    from api.rag_pipeline import run_complete_ingestion_pipeline, rag_query
 
 app = FastAPI()
 
@@ -30,7 +42,6 @@ def hello_world():
 def ingest_document(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename or "upload.pdf")[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        # Use file.file.read() for sync reading
         content = file.file.read()
         tmp.write(content)
         tmp_path = tmp.name
