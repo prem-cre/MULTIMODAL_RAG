@@ -10,12 +10,10 @@ langchain-chroma==0.1.2
 langchain-google-genai==1.0.8
 # ⚡ Use official client ONLY (No heavy local binaries/Tesseract)
 unstructured-client==0.24.1
-pydantic==2.7.4
-pydantic-settings==2.3.4
+pydantic
+pydantic-settings
 google-generativeai==0.7.2
 chromadb==0.5.2
 # Minimal deps for LangChain community helpers
 requests==2.31.0
 lxml==5.2.2
-nltk==3.8.1
-huggingface-hub

@@ -60,23 +60,22 @@ def partition_and_chunk_document(
                 content=file_content,
                 file_name=file_path,
             ),
-            strategy="hi_res",
+            # ⚡ Optimized for Vercel Hobby Tier (10s timeout)
+            strategy="fast",
+            # ⚡ Skips OCR but allows tables/images to be extracted from layout
             extract_image_block_types=["Image", "Table"],
             chunking_strategy="by_title",
-            max_characters=3000,
-            combine_under_n_chars=500
+            max_characters=2000,
+            combine_under_n_chars=300
         )
     )
 
     try:
         res = client.general.partition(request=req)
-        if status_callback:
-            status_callback(f"✅ Received {len(res.elements)} segments.")
+        # res.elements is a list of dicts representing the chunks
         return res.elements
     except Exception as e:
-        if status_callback:
-            status_callback(f"❌ Cloud Partition failed: {str(e)}")
-        raise e
+        raise ValueError(f"Cloud Partition Error: {str(e)}")
 
 def separate_content_types_from_dict(element: Dict) -> Dict:
     metadata = element.get("metadata", {})
