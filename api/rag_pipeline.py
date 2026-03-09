@@ -197,9 +197,40 @@ def generate_final_answer(chunks, query: str) -> str:
         return f"Error generating answer: {str(e)}"
 
 def run_complete_ingestion_pipeline(pdf_path, persist_directory=None, status_callback=None):
+    """
+    Optimized for Vercel 10s timeout.
+    Skips the slow LLM-summarization phase for speed.
+    """
+    # 1. Partition & Chunk
     chunk_dicts = partition_and_chunk_document(pdf_path, status_callback)
-    summarised = summarise_chunks(chunk_dicts, status_callback)
-    return create_vector_store(summarised, persist_directory)
+    
+    # 2. Convert to Documents immediately (No LLM summary to stay under 10s)
+    documents = []
+    for i, el in enumerate(chunk_dicts):
+        c = separate_content_types_from_dict(el)
+        # Store raw text but keep metadata for multimodal retrieval
+        doc = Document(
+            page_content=c["text"],
+            metadata={
+                "chunk_id": i + 1,
+                "original_content": json.dumps({
+                    "raw_text": c["text"],
+                    "tables_html": c["tables"],
+                    "images_base64": c["images"],
+                }),
+            },
+        )
+        documents.append(doc)
+    
+    # 3. Create Vector Store
+    if status_callback:
+        status_callback(f"📦 Indexing {len(documents)} segments...")
+    
+    db = create_vector_store(documents, persist_directory)
+    
+    if status_callback:
+        status_callback("🎉 Ready.")
+    return db
 
 def rag_query(query: str, persist_directory=None):
     import chromadb
