@@ -1,4 +1,4 @@
-# 🚀 Lean Production Requirements (Vercel Optimized)
+# 🚀 Performance Optimized (Vercel-Safe)
 fastapi==0.111.0
 uvicorn==0.30.1
 python-multipart==0.0.9
@@ -6,14 +6,11 @@ python-dotenv==1.0.1
 langchain==0.2.1
 langchain-core==0.2.17
 langchain-community==0.2.1
-langchain-chroma==0.1.2
 langchain-google-genai==1.0.8
-# ⚡ Use official client ONLY (No heavy local binaries/Tesseract)
 unstructured-client==0.24.1
 pydantic
 pydantic-settings
 google-generativeai==0.7.2
-chromadb==0.5.2
-# Minimal deps for LangChain community helpers
 requests==2.31.0
 lxml==5.2.2
+# ⚠️ Removed ChromaDB (Too heavy for Vercel/Hobby)
