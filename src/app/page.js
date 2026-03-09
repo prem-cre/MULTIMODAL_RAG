@@ -49,19 +49,26 @@ export default function Home() {
     const formData = new FormData();
     formData.append("file", file);
 
+    console.log("🚀 Starting upload to /api/ingest...");
     try {
       const response = await fetch("/api/ingest", {
         method: "POST",
         body: formData,
       });
 
+      console.log("📡 API Response received. Status:", response.status);
       const { json, text } = await readResponseSafely(response);
+      console.log("📦 Parsed response:", json || text);
 
       if (!response.ok) {
         const msg =
           json?.detail ||
           json?.message ||
-          (text.length < 300 ? text : "Upload failed — check server logs.");
+          (response.status === 504 ? "Vercel Execution Timeout (10s reached). Try a smaller PDF." :
+            response.status === 413 ? "File too large for Vercel Hobby (Max 4.5MB)." :
+              (text.length < 300 ? text : `Server Error: ${response.status}`));
+
+        console.error("❌ Upload Error Details:", msg);
         throw new Error(msg);
       }
 
@@ -73,6 +80,7 @@ export default function Home() {
       ]);
       setActiveTab("chat");
     } catch (err) {
+      console.error("🔥 Global Catch - Upload Failed:", err);
       setError(err.message);
     } finally {
       setIsProcessing(false);
@@ -84,6 +92,7 @@ export default function Home() {
     if (!query.trim() || isLoading) return;
 
     const currentQuery = query;
+    console.log("✍️ User Query:", currentQuery);
     setMessages((prev) => [...prev, { role: "user", content: currentQuery }]);
     setQuery("");
     setIsLoading(true);
@@ -97,13 +106,16 @@ export default function Home() {
         body: formData,
       });
 
+      console.log("📡 Query Response Status:", response.status);
       const { json, text } = await readResponseSafely(response);
 
       if (!response.ok) {
         const msg =
           json?.detail ||
           json?.message ||
-          (text.length < 300 ? text : "Query failed — check server logs.");
+          (text.length < 300 ? text : `Query failed: ${response.status}`);
+
+        console.error("❌ Query Error:", msg);
         throw new Error(msg);
       }
 
@@ -113,6 +125,7 @@ export default function Home() {
       ]);
       setLastSources(json?.chunks || []);
     } catch (err) {
+      console.error("🔥 Global Catch - Query Failed:", err);
       setMessages((prev) => [
         ...prev,
         { role: "ai", content: `❌ **Error:** ${err.message}` },
@@ -244,9 +257,8 @@ export default function Home() {
                 messages.map((msg, idx) => (
                   <div
                     key={idx}
-                    className={`chat-bubble ${
-                      msg.role === "user" ? "user-bubble" : "ai-bubble"
-                    }`}
+                    className={`chat-bubble ${msg.role === "user" ? "user-bubble" : "ai-bubble"
+                      }`}
                   >
                     <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>
                   </div>

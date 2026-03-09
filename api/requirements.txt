@@ -1,4 +1,4 @@
-# 🚀 Performance Optimized (Vercel-Safe)
+# 🚀 Ultra-Lightweight (Vercel Hobby Optimized)
 fastapi==0.111.0
 uvicorn==0.30.1
 python-multipart==0.0.9
@@ -8,9 +8,8 @@ langchain-core==0.2.17
 langchain-community==0.2.1
 langchain-google-genai==1.0.8
 unstructured-client==0.24.1
-pydantic
-pydantic-settings
 google-generativeai==0.7.2
 requests==2.31.0
-lxml==5.2.2
-# ⚠️ Removed ChromaDB (Too heavy for Vercel/Hobby)
+pydantic
+pydantic-settings
+# ⚠️ No heavy vector DB binaries (Chroma, FAISS) for Zero Crash Deployment
