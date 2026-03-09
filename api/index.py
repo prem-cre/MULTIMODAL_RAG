@@ -182,9 +182,9 @@ def query_endpoint(query: str = Form(...)):
         scored_docs.sort(key=lambda x: x[0], reverse=True)
         top_k = scored_docs[:3]
         
-        # 4. Generate Answer using Gemini 2.0
+        # 4. Generate Answer using Gemini 2.5 (High Performance Free Tier)
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite",
+            model="models/gemini-2.5-flash",
             google_api_key=GEMINI_KEY,
             temperature=0
         )
