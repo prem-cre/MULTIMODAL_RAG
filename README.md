@@ -104,5 +104,5 @@ Standard vector databases like **ChromaDB** require SQLite/C++ binaries that exc
 ## ⚖️ License
 Distributed under the MIT License. See `LICENSE` for more information.
 
-**Author**: [Your Name]
-**Project Link**: [https://github.com/your-username/multimodal-rag](https://github.com/your-username/multimodal-rag)
+**Author**: [Prem]
+**Project Link**: [https://github.com/your-username/multimodal-rag](https://github.com/prem-cre/MULTIMODAL_RAG)
