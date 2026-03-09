@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 
 # Mock environmental variables for the test if not present
 # (Using the keys from the User's .env file seen earlier)
-os.environ["GEMINI_API_KEY"] = "AIzaSyC3_zN8jEq_K4qiVuSjPSrf5eDAuBEl1yM"
-os.environ["UNSTRUCTURED_API_KEY"] = "uXNQkQUcl6RM1u31i7BCHG53XdGeWU"
+os.environ["GEMINI_API_KEY"] = ""
+os.environ["UNSTRUCTURED_API_KEY"] = ""
 
 from api.index import app
 
