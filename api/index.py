@@ -47,18 +47,39 @@ def dot_product(v1: List[float], v2: List[float]) -> float:
     return sum(a * b for a, b in zip(v1, v2))
 
 def get_embeddings(texts: List[str]) -> List[List[float]]:
-    """Get embeddings from Gemini in batch."""
+    """Get embeddings from Gemini in batch using a stabilized model retry strategy."""
     if not texts: return []
-    try:
-        res = genai.embed_content(
-            model="models/embedding-001",
-            content=texts,
-            task_type="retrieval_document"
-        )
-        return res["embedding"]
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        raise e
+    # Try the modern model first, fallback to the legacy name if needed
+    for model_name in ["models/text-embedding-004", "models/gemini-embedding-001"]:
+        try:
+            res = genai.embed_content(
+                model=model_name,
+                content=texts,
+                task_type="retrieval_document"
+            )
+            return res["embedding"]
+        except Exception as e:
+            if model_name == "models/gemini-embedding-001":
+                 raise e
+            print(f"INFO: {model_name} failed in batch mode, trying fallback...")
+            continue
+    return []
+
+def get_single_embedding(text: str) -> List[float]:
+    """Get a single embedding using a stabilized model retry strategy."""
+    for model_name in ["models/text-embedding-004", "models/gemini-embedding-001"]:
+        try:
+            res = genai.embed_content(
+                model=model_name,
+                content=text,
+                task_type="retrieval_query"
+            )
+            return res["embedding"]
+        except Exception as e:
+            if model_name == "models/gemini-embedding-001":
+                 raise e
+            continue
+    return []
 
 # --- Core RAG Logic ---
 
@@ -144,12 +165,8 @@ def query_endpoint(query: str = Form(...)):
         raise HTTPException(status_code=400, detail="No document indexed. Please re-upload.")
         
     try:
-        # 1. Embed Query
-        query_vector = genai.embed_content(
-            model="models/embedding-001",
-            content=query,
-            task_type="retrieval_query"
-        )["embedding"]
+        # 1. Embed Query (Using stabilized helper)
+        query_vector = get_single_embedding(query)
         
         # 2. Load Index
         with open(INDEX_PATH, "r") as f:
